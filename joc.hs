@@ -138,22 +138,23 @@ getScores turn game@(Game board w h)
 
 evaluateBoard :: Game -> Int
 evaluateBoard game@(Game board w h) =
-    if myMaximum opp_scores >= 4
+    if myMaximum opp_scores >= 4 || difference < -5 --TODO
         then -10000
     else if myMaximum own_scores >= 4
         then 10000
-    else (sum own_scores) - (sum opp_scores)
+    else difference
     where 
         own_scores = getScores Computer game
         opp_scores = getScores Player game
+        difference = (sum own_scores) - (sum opp_scores)
         myMaximum [] = 0
         myMaximum xs = maximum xs
         
 simulateNmoves :: Turn -> Game -> Int -> Int
 simulateNmoves _ game 0 = evaluateBoard game
 simulateNmoves turn game@(Game board w h) n
-    | currentEval ==  10000 =  10000
-    | currentEval ==  10000 = -10000
+    | currentEval ==   10000 =  10000
+    | currentEval ==  -10000 = -10000
     | otherwise = 
         if turn == Computer then maximum simulatedMoves else minimum simulatedMoves
     where
