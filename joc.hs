@@ -1,6 +1,8 @@
 import Text.Read
 import System.Random
 import Debug.Trace
+import Data.List
+import Data.Maybe
 
 -- Random number generation
 
@@ -22,7 +24,7 @@ type Board = Int -> Int -> Piece
 
 -- Data types
 data Game = Game Board Int Int
-data Piece = Cross | Circle | None
+data Piece = Cross | Circle | None | OutOfBoard
     deriving (Eq)
 data Strategy = Random | Greedy | Smart
     deriving (Show, Eq)
@@ -36,6 +38,7 @@ instance Show Piece where
     show Cross = "X"
     show Circle = "O"
     show None = "."
+    show OutOfBoard = "#"
 
 instance Show Game where
     show (Game board w h) = concat (map (showLine board w) [h, h-1..1])
@@ -47,7 +50,9 @@ showLine board w row = show (board row 1) ++ concat [" " ++ show (board row col)
 
 -- Creators
 createBoard :: Int -> Int -> Board
-createBoard w h row col = None
+createBoard w h row col
+    | 1 <= row && row <= h && 1 <= col && col <= w = None
+    | otherwise = OutOfBoard
 
 createGame :: Int -> Int -> Game
 createGame w h = Game (createBoard w h) w h
@@ -58,10 +63,6 @@ createGame w h = Game (createBoard w h) w h
 -- Pre: 1 <= row <= height, 1 <= col <= width
 getPiece :: Board -> Int -> Int -> Piece
 getPiece board row col = board row col
-
--- Auxiliary functions to get piece at position
-
--- (Empty)
 
 
 -- Functions to set piece at position
@@ -76,18 +77,17 @@ setPiece turn (Game board w h) col = Game newBoard w h
             | otherwise = board a b
 
 
--- Auxiliary functions to set piece at position
 firstEmptyRow :: Board -> Int -> Int
 firstEmptyRow board col = head $ dropWhile isFull [1..]
     where 
-        isFull row = (getPiece board row col) /= None
+        isFull row = (getPiece board row col /= None) && (getPiece board row col /= OutOfBoard)
 
 getTurnPiece :: Turn -> Piece
 getTurnPiece Player = Circle
 getTurnPiece Computer = Cross
 
 isValidColumn :: Game -> Int -> Bool
-isValidColumn (Game board w h) col = (firstEmptyRow board col) <= h
+isValidColumn (Game board w h) col = (firstEmptyRow board col) <= h && 1 <= col && col <= w
 
 -- Reads an int from stdin until it receives one that fulfills the condition
 readInt :: String -> (Int -> Bool) -> IO Int
@@ -115,19 +115,23 @@ getStrategy 3 = Smart
 getPlayRandom :: Game -> IO Int
 getPlayRandom game@(Game board w h) = randChoice [col | col <- [1..w], isValidColumn game col]
 
--- Returns the first element of the first pair which has a maximal second element
-firstEqualToMax :: [(Int, Int)] -> Int
-firstEqualToMax xs
-    | y == maxim = x
-    | otherwise = firstEqualToMax (tail xs)
-    where
-        (x, y) = head xs
-        maxim = maximum (map snd xs)
+argMax :: [(Int, Int)] -> Int
+argMax xs
+    = fst . fromJust $ find (\(x, y) -> y == maxim) xs
+        where
+            maxim = maximum $ map snd xs
+            
+argMin :: [(Int, Int)] -> Int
+argMin xs
+    = fst . fromJust $ find (\(x, y) -> y == minim) xs
+        where
+            minim = minimum $ map snd xs
 
 getPlayGreedy :: Game -> Int
 getPlayGreedy game@(Game board w h) 
-    = firstEqualToMax . filter (isValidColumn game . fst)
-        $ [(i, getMaxConsecutiveCol (setPiece Computer game i) i) | i <- [1..w]]
+    = argMax scores
+        where
+            scores = [(i, getMaxConsecutiveCol (setPiece Computer game i) i) | i <- filter (isValidColumn game) [1..w]]
 
 getScores :: Turn -> Game -> [Int]
 getScores turn game@(Game board w h)
@@ -136,9 +140,21 @@ getScores turn game@(Game board w h)
              col <- [1..w], 
              getPiece board row col == getTurnPiece turn]
 
+simulateNmoves :: Game -> Turn -> Int -> Int
+simulateNmoves game@(Game board w h) turn 1
+    = minimum [evaluateBoard (setPiece Player game i) | i <- [1..w], isValidColumn game i]
+simulateNmoves game@(Game board w h) turn n
+    | turn == Player = if score < -4 then -5000 else minimum simulated
+    | otherwise = maximum simulated
+        where
+            score = evaluateBoard game
+            newN = if turn == Computer then (n-1) else n
+            newGames = [setPiece turn game i | i <- [1..w], isValidColumn game i]
+            simulated = [simulateNmoves newGame (switchTurn turn) newN | newGame <- newGames]
+
 evaluateBoard :: Game -> Int
 evaluateBoard game@(Game board w h) =
-    if myMaximum opp_scores >= 4 || difference < -5 --TODO
+    if myMaximum opp_scores >= 4
         then -10000
     else if myMaximum own_scores >= 4
         then 10000
@@ -149,32 +165,15 @@ evaluateBoard game@(Game board w h) =
         difference = (sum own_scores) - (sum opp_scores)
         myMaximum [] = 0
         myMaximum xs = maximum xs
-        
-simulateNmoves :: Turn -> Game -> Int -> Int
-simulateNmoves _ game 0 = evaluateBoard game
-simulateNmoves turn game@(Game board w h) n
-    | currentEval ==   10000 =  10000
-    | currentEval ==  -10000 = -10000
-    | otherwise = 
-        if turn == Computer then maximum simulatedMoves else minimum simulatedMoves
-    where
-        currentEval = evaluateBoard game
-        possibleMoves = filter (isValidColumn game) [1..w]
-        simulatedMoves = [simulateNmoves (switchTurn turn) (setPiece turn game col) newN |
-                          col <- possibleMoves,
-                          isValidColumn game col]
-        newN = if turn == Player then (n-1) else n
 
 getPlaySmart :: Int -> Game -> Int
-getPlaySmart turnNum game@(Game board w h) = bestMove
-    where 
-        turnsAhead = min 3 (quot (w*h - turnNum + 1) 2)
-        possibleMoves = filter (isValidColumn game) [1..w]
-        moves = [(col, simulateNmoves Player (setPiece Computer game col) turnsAhead)| 
-                 col <- possibleMoves]
-        maxim = maximum $ map snd moves
-        bestMoves = filter (\x -> snd x == maxim) moves
-        bestMove = fst . head $ bestMoves
+getPlaySmart turnNum game@(Game board w h) =
+    trace(show scores) $
+    argMax scores
+        where 
+            turnsAhead = min 2 (quot (w*h - turnNum + 1) 2)
+            games = [(i, setPiece Computer game i) | i <- [1..w], isValidColumn game i]
+            scores = [(i, simulateNmoves newGame Player turnsAhead) | (i, newGame) <- games]
 
 getComputerChoice :: Strategy -> Int -> Game -> IO Int
 getComputerChoice Random _ = getPlayRandom
@@ -196,44 +195,27 @@ switchTurn :: Turn -> Turn
 switchTurn Player = Computer
 switchTurn Computer = Player
 
-getMaxDiagonal1 :: Game -> Int -> Int -> Int
-getMaxDiagonal1 game@(Game board w h) row col
-    = fst (until isDifferent add1 (row, col)) - fst (until isDifferent sub1 (row, col)) - 1
+getMaxConsecutiveDirection :: Game -> Int -> Int -> ((Int, Int) -> (Int, Int)) -> ((Int, Int) -> (Int, Int)) -> Int
+getMaxConsecutiveDirection game@(Game board w h) row col add1 sub1 
+    = if isPossible then maxim else 0
         where
             current = getPiece board row col
             isDifferent (r, c) = getPiece board r c /= current
-            add1 (x, y) = (x+1, y-1)
-            sub1 (x, y) = (x-1, y+1)
-
-getMaxDiagonal2 :: Game -> Int -> Int -> Int
-getMaxDiagonal2 game@(Game board w h) row col
-    = fst (until isDifferent add1 (row, col)) - fst (until isDifferent sub1 (row, col)) - 1
-        where
-            current = getPiece board row col
-            isDifferent (r, c) = getPiece board r c /= current
-            add1 (x, y) = (x+1, y+1)
-            sub1 (x, y) = (x-1, y-1)
-
-getMaxHorizontal :: Game -> Int -> Int -> Int
-getMaxHorizontal game@(Game board w h) row col
-    = (until isDifferent (+1) col) - (until isDifferent (+ (-1)) col) - 1
-        where
-            current = getPiece board row col
-            isDifferent c = getPiece board row c /= current
-
-getMaxVertical :: Game -> Int -> Int -> Int
-getMaxVertical game@(Game board w h) row col
-    = (until isDifferent (+1) row) - (until isDifferent (+ (-1)) row) - 1
-        where
-            current = getPiece board row col
-            isDifferent r = getPiece board r col /= current
+            isBlocked (r, c) = (getPiece board r c /= current) && (getPiece board r c /= None)
+            distance (r1, c1) (r2, c2) = max (abs (r1 - r2)) (abs (c1 - c2))
+            maxim = distance (until isDifferent add1 (row, col)) (until isDifferent sub1 (row, col)) - 1
+            maximPossible = distance (until isBlocked add1 (row, col)) (until isBlocked sub1 (row, col)) - 1
+            isPossible = maximPossible >= 4
 
 getMaxConsecutivePos :: Game -> Int -> Int -> Int
 getMaxConsecutivePos game@(Game board w h) row col
-    = maximum [getMaxVertical game row col,
-               getMaxHorizontal game row col,
-               getMaxDiagonal1 game row col,
-               getMaxDiagonal2 game row col]
+    = maximum scores
+        where
+            scores = [getMaxConsecutiveDirection game row col add sub | (add, sub) <- moves]
+            moves = [(\(x, y) -> (x+1, y),   \(x, y) -> (x-1, y)),    --vertical
+                     (\(x, y) -> (x, y+1),   \(x, y) -> (x, y-1)),    --horizontal
+                     (\(x, y) -> (x+1, y-1), \(x, y) -> (x-1, y+1)),  --diagonal (top right) -> (bottom left) 
+                     (\(x, y) -> (x+1, y+1), \(x, y) -> (x-1, y-1))]  --diagonal (top left) -> (bottom right)
 
 getMaxConsecutiveCol :: Game -> Int -> Int
 getMaxConsecutiveCol game@(Game board w h) col
