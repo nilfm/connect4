@@ -7,9 +7,13 @@ import Data.Maybe
 -- Constants
 minusInf = -10000
 plusInf = 10000
-numTurnsAhead = 2
 
--- Random number generation
+-- How many turns ahead the minimax algorithm will look
+-- Depends on how many columns have spots left.
+numTurnsAhead game = max 1 turns
+    where 
+        validPlays = length $ getValidColumns game
+        turns = quot (9-validPlays) 2
 
 -- randInt low high is an IO action that returns a
 -- pseudo-random integer between low and high (both included).
@@ -19,23 +23,28 @@ randInt low high = do
     let result = low + random `mod` (high - low + 1)
     return result
 
+-- Randomly selects an element in a list
+-- Does not work with infinite lists
 randChoice :: [a] -> IO a
 randChoice options = do
     index <- randInt 0 ((length options) - 1)
     return (options !! index)
 
 -- Type aliases
+-- A Strategy receives the turn number and the Game (board state and dimensions) 
+-- and returns a column where to play
+type Strategy = Int -> Game -> IO Int
 type Board = Int -> Int -> Piece
 
 -- Data types
+-- A Game holds the information about the board and its dimensions
 data Game = Game Board Int Int
+-- The player will always be a circle, and the computer will always be a cross
 data Piece = Cross | Circle | None | OutOfBoard
     deriving (Eq)
-data Strategy = Random | Greedy | Smart
+data StrategyName = Random | Greedy | Smart
     deriving (Show, Eq)
 data Turn = Player | Computer
-    deriving (Show, Eq)
-data Outcome = Win | Lose | Tie
     deriving (Show, Eq)
 
 -- Show instances
@@ -45,10 +54,11 @@ instance Show Piece where
     show None = "."
     show OutOfBoard = "#"
 
+-- This is how the game will be displayed at each move
 instance Show Game where
     show (Game board w h) = concat (map (showLine board w) [h, h-1..1]) ++ showNums w
 
--- Auxiliary functions for Show instances
+-- Helper functions
 showLine :: Board -> Int -> Int -> String
 showLine board w row = show (board row 1) ++ concat [" " ++ show (board row col) | col <- [2..w]] ++ "\n"
 
@@ -79,10 +89,15 @@ getTurnPiece :: Turn -> Piece
 getTurnPiece Player = Circle
 getTurnPiece Computer = Cross
 
-getStrategy :: Int -> Strategy
-getStrategy 1 = Random
-getStrategy 2 = Greedy
-getStrategy 3 = Smart
+getStrategyName :: Int -> StrategyName
+getStrategyName 1 = Random
+getStrategyName 2 = Greedy
+getStrategyName 3 = Smart
+
+getStrategy :: StrategyName -> Strategy
+getStrategy Random = getPlayRandom
+getStrategy Greedy = getPlayGreedy
+getStrategy Smart = getPlaySmart
 
 getTurn :: Int -> Turn
 getTurn 0 = Player
@@ -124,17 +139,17 @@ argMax xs
 
 -- BEGIN RANDOM STRATEGY
 
-getPlayRandom :: Game -> IO Int
-getPlayRandom game@(Game board w h) = randChoice [col | col <- getValidColumns game]
+getPlayRandom :: Strategy
+getPlayRandom _ game@(Game board w h) = randChoice [col | col <- getValidColumns game]
    
 -- END RANDOM STRATEGY
       
             
 -- BEGIN GREEDY STRATEGY
           
-getPlayGreedy :: Game -> Int
-getPlayGreedy game@(Game board w h) 
-    = if null scoresPrevent then argMax scores else argMax scoresPrevent
+getPlayGreedy :: Strategy
+getPlayGreedy _ game@(Game board w h) 
+    = return $ if null scoresPrevent then argMax scores else argMax scoresPrevent
         where
             scores = [(i, getMaxConsecutiveCol (setPiece Computer game i) i) | i <- getValidColumns game]
             maxim = maximum $ map snd scores
@@ -153,8 +168,6 @@ playerCanWin game@(Game board w h) = null wonGames
 
 
 -- BEGIN SMART STRATEGY
-
--- TODO: OPTIMIZE THIS FUNCTION
 getScores :: Turn -> Game -> [Int]
 getScores turn game@(Game board w h)
     = [getMaxConsecutivePos game row col | 
@@ -224,30 +237,28 @@ alphaBetaMinimax game@(Game board w h) Player n alpha beta
             (_, _, score) = betaStep scoreGetters alpha beta plusInf
 
 
-getPlaySmart :: Int -> Game -> Int
-getPlaySmart turnNum game@(Game board w h) = argMax scores
+getPlaySmart :: Strategy
+getPlaySmart turnNum game@(Game board w h) = return $ argMax scores
         where 
-            turnsAhead = min numTurnsAhead (quot (w*h - turnNum - 2) 2)
+            turnsAhead = min (numTurnsAhead game) (quot (w*h - turnNum - 2) 2)
             games = [(i, setPiece Computer game i) | i <- getValidColumns game]
             alpha = minusInf
             beta = plusInf
             selectScore (_, _, x) = x
             scores = [(i, alphaBetaMinimax newGame Player turnsAhead alpha beta) | 
                       (i, newGame) <- games]
-
+                      
 -- END SMART STRATEGY
 
 getComputerChoice :: Strategy -> Int -> Game -> IO Int
-getComputerChoice Random _ = getPlayRandom
-getComputerChoice Greedy _ = return . getPlayGreedy
-getComputerChoice Smart turnNum = return . (getPlaySmart turnNum)
+getComputerChoice strategy turnNum game = strategy turnNum game
 
 getPlayerChoice :: Game -> IO Int
 getPlayerChoice game@(Game board w h) = readInt "Enter column: " (isValidColumn game)
     
 getChoice :: Turn -> Strategy -> Int -> Game -> IO Int
 getChoice Player   _     _       game = getPlayerChoice game
-getChoice Computer strat turnNum game = getComputerChoice strat turnNum game 
+getChoice Computer strategy turnNum game = getComputerChoice strategy turnNum game 
 
 -- Returns the maximum number of consecutive pieces starting at the (row, col) cell in a given direction
 -- The direction is given by two functions: increment one in that direction and decrement one in that direction
@@ -274,7 +285,7 @@ getMaxConsecutivePos game@(Game board w h) row col
                      (\(x, y) -> (x+1, y-1), \(x, y) -> (x-1, y+1)),  --diagonal (top right) -> (bottom left) 
                      (\(x, y) -> (x+1, y+1), \(x, y) -> (x-1, y-1))]  --diagonal (top left) -> (bottom right)
 
--- Returns the maximum number of consecutive pieces starting at the top-most cell of the column col
+-- Returns the maximum number of consecutive pieces starting at the top-most cell of the column col that has a piece
 getMaxConsecutiveCol :: Game -> Int -> Int
 getMaxConsecutiveCol game@(Game board w h) col
     = getMaxConsecutivePos game row col
@@ -298,6 +309,7 @@ readInt s cond = do
                         putStrLn "This number is invalid"
                         readInt s cond
 
+-- Plays one round (one move by the player or computer) and calls itself again if the game is not over
 playRound :: Game -> Strategy -> Turn -> Int -> IO()
 playRound game@(Game board w h) strat turn turnNum = do
     putStrLn $ "Turn " ++ (show turnNum) ++ " - " ++ (show turn) ++ " plays"
@@ -317,21 +329,24 @@ playRound game@(Game board w h) strat turn turnNum = do
             putStrLn $ show updatedGame
     else playRound updatedGame strat (switchTurn turn) (turnNum+1)
 
-playGame :: Int -> Int -> Strategy -> IO()
-playGame w h strat = do
+-- Sets up the game and calls playRound
+playGame :: Int -> Int -> StrategyName -> IO()
+playGame w h stratName = do
     putStrLn $ "Width: " ++ show w
     putStrLn $ "Height: " ++ show h
-    putStrLn $ "Strategy: " ++ show strat ++ "\n"
+    putStrLn $ "Strategy: " ++ show stratName ++ "\n"
     let game = createGame w h
     starter <- randInt 0 1
     let turn = getTurn starter
-    playRound game strat turn 1
+    let strategy = getStrategy stratName
+    playRound game strategy turn 1
 
+-- Asks the user for input and calls playGame
 main :: IO()
 main = do
     putStrLn "Welcome to Connect 4!"
     width <- readInt "Enter the width of the board" (> 0)
     height <- readInt "Enter the height of the board" (> 0)
     strategyChoice <- readInt "1 - Random\n2 - Greedy\n3 - Smart" (\x -> x >= 1 && x <= 3)
-    let strategy = getStrategy strategyChoice
+    let strategy = getStrategyName strategyChoice
     playGame width height strategy
