@@ -314,7 +314,8 @@ playRound :: Game -> Strategy -> Turn -> Int -> IO()
 playRound game@(Game board w h) strat turn turnNum = do
     putStrLn $ "Turn " ++ (show turnNum) ++ " - " ++ (show turn) ++ " plays"
     putStrLn $ show game
-    choice <- getChoice turn strat turnNum game 
+    choice <- getChoice turn strat turnNum game
+    putStrLn $ (show turn) ++ " played " ++ (show choice) ++ "\n"
     let updatedGame = setPiece turn game choice
     let maxConsecutive = getMaxConsecutiveCol updatedGame choice
     if maxConsecutive >= 4
